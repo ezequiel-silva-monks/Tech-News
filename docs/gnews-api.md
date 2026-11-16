@@ -53,10 +53,16 @@ para executar ações.
 Quando disponível, a imagem retornada pela GNews é exibida no navegador.
 
 Se estiver ausente ou falhar, permanece um placeholder.
-O backend não baixa imagens nem matérias externas.
+O backend não baixa matérias externas.
 
-O carregamento de imagens permite que o servidor de origem receba
+A exportação em PDF pede a imagem a `GET /api/image-proxy`.
+O backend só busca URLs HTTP ou HTTPS públicas, recusa endereços
+locais e devolve JPEG. Se a imagem não puder ser incluída, o PDF
+é gerado mesmo assim e a interface informa a omissão.
+
+No carrossel, o carregamento permite que o servidor de origem receba
 o IP do usuário. A política `no-referrer` evita enviar o referenciador.
+No PDF, a origem da imagem vê o IP desta máquina.
 
 ## Tráfego e disponibilidade
 

@@ -4,6 +4,7 @@ import express, { type Response } from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { convert } from "html-to-text";
+import sharp from "sharp";
 import { z } from "zod";
 import {
   deleteSummary,
@@ -200,6 +201,134 @@ function safeUrl(value: string | null | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGE_PIXELS = 16_777_216;
+
+function isBlockedImageHost(hostname: string): boolean {
+  const host = hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "");
+
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local")
+  ) {
+    return true;
+  }
+
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    return isPrivateIPv4(host);
+  }
+
+  if (host.includes(":")) {
+    return isPrivateIPv6(host);
+  }
+
+  return false;
+}
+
+function isPrivateIPv4(host: string): boolean {
+  const parts = host.split(".").map((part) => Number(part));
+
+  if (
+    parts.length !== 4 ||
+    parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+  ) {
+    return true;
+  }
+
+  const [first, second] = parts;
+
+  if (first === 0 || first === 10 || first === 127) return true;
+  if (first === 169 && second === 254) return true;
+  if (first === 172 && second >= 16 && second <= 31) return true;
+  if (first === 192 && second === 168) return true;
+
+  return false;
+}
+
+function isPrivateIPv6(host: string): boolean {
+  const address = host.split("%")[0];
+
+  if (address === "::" || address === "::1") return true;
+
+  const dotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(address);
+
+  if (dotted) return isPrivateIPv4(dotted[1]);
+
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(address);
+
+  if (mapped) {
+    const high = Number.parseInt(mapped[1], 16);
+    const low = Number.parseInt(mapped[2], 16);
+    const ipv4 = [
+      (high >> 8) & 255,
+      high & 255,
+      (low >> 8) & 255,
+      low & 255,
+    ].join(".");
+
+    return isPrivateIPv4(ipv4);
+  }
+
+  const firstText = address.startsWith(":") ? "0" : address.split(":")[0];
+  const first = Number.parseInt(firstText, 16);
+
+  if (!Number.isInteger(first)) return true;
+
+  if (first >= 0xfe80 && first <= 0xfebf) return true;
+  if (first >= 0xfc00 && first <= 0xfdff) return true;
+
+  return false;
+}
+
+async function readLimitedBody(
+  response: globalThis.Response,
+  limit: number,
+): Promise<Buffer> {
+  const declared = Number(response.headers.get("content-length"));
+
+  if (Number.isFinite(declared) && declared > limit) {
+    throw new Error("TooLarge");
+  }
+
+  if (!response.body) {
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    if (buffer.length > limit) throw new Error("TooLarge");
+
+    return buffer;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) break;
+      if (!value) continue;
+
+      received += value.byteLength;
+
+      if (received > limit) {
+        await reader.cancel();
+        throw new Error("TooLarge");
+      }
+
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return Buffer.concat(chunks);
 }
 
 function articleId(url: string): string {
@@ -705,6 +834,145 @@ app.get("/api/news", async (req, res) => {
   } finally {
     generationRunning = false;
     res.off("close", onClose);
+  }
+});
+
+app.get("/api/image-proxy", async (req, res) => {
+  const query = z
+    .object({
+      url: z.string().min(1).max(2_000),
+    })
+    .safeParse(req.query);
+
+  const target = query.success ? safeUrl(query.data.url) : null;
+  const hostname = target ? new URL(target).hostname : "";
+
+  if (!target || isBlockedImageHost(hostname)) {
+    res.status(400).json({
+      error: "Informe uma URL HTTP ou HTTPS pública.",
+    });
+    return;
+  }
+
+  try {
+    const response = await fetch(target, {
+      signal: AbortSignal.timeout(10_000),
+      redirect: "error",
+      headers: { Accept: "image/*" },
+    });
+
+    const contentType = response.headers.get("content-type") ?? "";
+
+    if (!response.ok || !contentType.toLowerCase().startsWith("image/")) {
+      throw new Error("UpstreamRejected");
+    }
+
+    const bytes = await readLimitedBody(response, MAX_IMAGE_BYTES);
+    const jpeg = await sharp(bytes, {
+      limitInputPixels: MAX_IMAGE_PIXELS,
+      animated: false,
+    })
+      .rotate()
+      .jpeg({ quality: 82 })
+      .toBuffer();
+
+    if (jpeg.length > MAX_IMAGE_BYTES) {
+      throw new Error("TooLarge");
+    }
+
+    res.status(200);
+    res.setHeader("Content-Type", "image/jpeg");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Length", String(jpeg.length));
+    res.end(jpeg);
+  } catch (error) {
+    console.error(
+      "[GET /api/image-proxy]",
+      error instanceof Error ? error.name : "UnknownError",
+    );
+
+    if (!res.headersSent) {
+      res.status(502).json({
+        error: "Não foi possível obter a imagem.",
+      });
+    }
+  }
+});
+
+const ollamaTagsSchema = z.object({
+  models: z
+    .array(
+      z.object({
+        name: z.string().optional(),
+        model: z.string().optional(),
+      }),
+    )
+    .optional(),
+});
+
+function modelIsInstalled(names: string[], configured: string): boolean {
+  return names.some(
+    (name) => name === configured || name.startsWith(`${configured}:`),
+  );
+}
+
+app.get("/api/health", async (_req, res) => {
+  const base = OLLAMA_URL.replace(/\/+$/, "");
+
+  try {
+    const response = await fetch(`${base}/api/tags`, {
+      signal: AbortSignal.timeout(3_000),
+      redirect: "error",
+    });
+    const contentType = response.headers.get("content-type") ?? "";
+
+    if (!response.ok || !contentType.includes("application/json")) {
+      res.status(503).json({
+        ok: false,
+        ollama: "down",
+        model: MODEL,
+        modelReady: false,
+      });
+      return;
+    }
+
+    const parsed = ollamaTagsSchema.safeParse(await response.json());
+    const names = parsed.success
+      ? (parsed.data.models ?? []).flatMap((item) =>
+          [item.name, item.model].filter(
+            (name): name is string => Boolean(name),
+          ),
+        )
+      : [];
+
+    if (!modelIsInstalled(names, MODEL)) {
+      res.status(503).json({
+        ok: false,
+        ollama: "up",
+        model: MODEL,
+        modelReady: false,
+      });
+      return;
+    }
+
+    res.status(200).json({
+      ok: true,
+      ollama: "up",
+      model: MODEL,
+      modelReady: true,
+    });
+  } catch (error) {
+    console.error(
+      "[GET /api/health]",
+      error instanceof Error ? error.name : "UnknownError",
+    );
+
+    res.status(503).json({
+      ok: false,
+      ollama: "down",
+      model: MODEL,
+      modelReady: false,
+    });
   }
 });
 

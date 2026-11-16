@@ -283,12 +283,13 @@ O modelo é instruído a tratar esse material como dados e não recebe ferrament
 
 ### Imagens externas
 
-As imagens são carregadas diretamente pelo navegador, quando disponíveis.
+No carrossel, as imagens são carregadas diretamente pelo navegador, quando disponíveis.
 
 - Imagens ausentes ou com falha são substituídas pelo placeholder.
-- O backend não baixa as imagens.
-- A política `no-referrer` evita enviar o referenciador.
-- O servidor da imagem ainda pode receber o IP do usuário e os dados normais da conexão.
+- A exportação em PDF pede cada imagem a `GET /api/image-proxy`. O backend só busca URLs HTTP ou HTTPS públicas, recusa endereços locais e devolve JPEG.
+- Se alguma imagem não puder entrar no PDF, a exportação continua e o aviso informa quantas ficaram de fora.
+- A política `no-referrer` evita enviar o referenciador no carrossel.
+- O servidor da imagem pode receber o IP do usuário no carrossel, ou o IP desta máquina quando o PDF é gerado.
 
 ### Serviços locais
 
@@ -334,6 +335,8 @@ Verifique a validade da chave, a cota e as permissões do plano no dashboard da 
 
 ### O resumo não foi gerado
 
+A tela inicial consulta `GET /api/health`. O backend pergunta a `/api/tags` do Ollama se o serviço está no ar e se o modelo configurado está baixado.
+
 Verifique:
 
 ```bash
@@ -348,7 +351,7 @@ O conteúdo fornecido pela API pode ser insuficiente. A aplicação permite camp
 
 ### A imagem não aparece
 
-A URL pode estar indisponível ou o servidor de origem pode bloquear o carregamento. Nesse caso, a aplicação mantém o placeholder.
+A URL pode estar indisponível ou o servidor de origem pode bloquear o carregamento. No carrossel, a aplicação mantém o placeholder. No PDF, a exportação segue e informa quantas imagens ficaram de fora.
 
 ## Estrutura principal
 

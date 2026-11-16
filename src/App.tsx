@@ -136,6 +136,69 @@ function isDone(
   );
 }
 
+type HealthReport = {
+  ok: boolean;
+  ollama: "up" | "down";
+  model: string;
+  modelReady: boolean;
+};
+
+type HealthNotice = {
+  tone: "ok" | "problem";
+  message: string;
+};
+
+function isHealth(value: unknown): value is HealthReport {
+  if (!value || typeof value !== "object") return false;
+
+  const report = value as HealthReport;
+
+  return (
+    typeof report.ok === "boolean" &&
+    (report.ollama === "up" || report.ollama === "down") &&
+    typeof report.model === "string" &&
+    report.model.length > 0 &&
+    typeof report.modelReady === "boolean"
+  );
+}
+
+function healthNoticeFrom(report: HealthReport): HealthNotice {
+  if (report.ollama === "down") {
+    return {
+      tone: "problem",
+      message: "O Ollama não está em execução.",
+    };
+  }
+
+  if (!report.ok || !report.modelReady) {
+    return {
+      tone: "problem",
+      message: `O modelo ${report.model} não está baixado no Ollama.`,
+    };
+  }
+
+  return {
+    tone: "ok",
+    message: `Ollama está em execução e o modelo ${report.model} está disponível.`,
+  };
+}
+
+const backendOffline = "O backend não está em execução.";
+
+async function readJsonResponse(response: Response): Promise<unknown> {
+  const contentType = response.headers.get("content-type") ?? "";
+
+  if (!contentType.includes("application/json")) {
+    throw new Error(backendOffline);
+  }
+
+  try {
+    return await response.json();
+  } catch {
+    throw new Error(backendOffline);
+  }
+}
+
 function progressMessage(progress: StreamProgress): string {
   if (progress.total === null) {
     return "Consultando a GNews e preparando os resumos com llama3.1.";
@@ -337,6 +400,7 @@ export default function App() {
   const [screen, setScreen] = useState<"settings" | "news">("settings");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [healthNotice, setHealthNotice] = useState<HealthNotice | null>(null);
 
   const controllerRef = useRef<AbortController | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
@@ -348,6 +412,43 @@ export default function App() {
 
   useEffect(() => {
     return () => controllerRef.current?.abort();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function checkHealth() {
+      try {
+        const response = await fetch("/api/health", {
+          signal: controller.signal,
+        });
+        const payload = await readJsonResponse(response);
+
+        if (!isHealth(payload)) {
+          setHealthNotice({ tone: "problem", message: backendOffline });
+          return;
+        }
+
+        setHealthNotice(healthNoticeFrom(payload));
+      } catch (caught) {
+        if (controller.signal.aborted) return;
+
+        if (caught instanceof TypeError) {
+          setHealthNotice({ tone: "problem", message: backendOffline });
+          return;
+        }
+
+        setHealthNotice({
+          tone: "problem",
+          message:
+            caught instanceof Error ? caught.message : backendOffline,
+        });
+      }
+    }
+
+    void checkHealth();
+
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -391,13 +492,16 @@ export default function App() {
         let message = "Não foi possível contactar o backend.";
 
         try {
-          const result = (await response.json()) as { error?: unknown };
+          const result = (await readJsonResponse(response)) as {
+            error?: unknown;
+          };
 
           if (typeof result.error === "string" && result.error) {
             message = result.error;
           }
-        } catch {
-          message = "Não foi possível contactar o backend.";
+        } catch (caught) {
+          message =
+            caught instanceof Error ? caught.message : backendOffline;
         }
 
         throw new Error(message);
@@ -470,7 +574,7 @@ export default function App() {
       if (controller.signal.aborted) return;
 
       if (caught instanceof TypeError) {
-        setError("Não foi possível contactar o backend.");
+        setError(backendOffline);
         return;
       }
 
@@ -749,6 +853,19 @@ export default function App() {
         </h1>
         <p>Integrado com a API GNews para exibir notícias atualizadas</p>
       </header>
+
+        {healthNotice && (
+          <p
+            className={
+              healthNotice.tone === "ok"
+                ? "notice health-status"
+                : "error-message health-status"
+            }
+            role={healthNotice.tone === "ok" ? "status" : "alert"}
+          >
+            {healthNotice.message}
+          </p>
+        )}
 
         <form
           className="settings-form"
