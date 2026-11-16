@@ -71,11 +71,6 @@ function isDone(value: unknown): value is NewsStreamDone {
   );
 }
 
-type HealthNotice = {
-  tone: "ok" | "problem";
-  message: string;
-};
-
 function isHealth(value: unknown): value is HealthReport {
   if (!value || typeof value !== "object") return false;
 
@@ -90,25 +85,17 @@ function isHealth(value: unknown): value is HealthReport {
   );
 }
 
-function healthNoticeFrom(report: HealthReport): HealthNotice {
+// Retorna só os problemas. Com Ollama e modelo prontos, não há aviso.
+function healthProblemFrom(report: HealthReport): string | null {
   if (report.ollama === "down") {
-    return {
-      tone: "problem",
-      message: "O Ollama não está em execução.",
-    };
+    return "O Ollama não está em execução.";
   }
 
   if (!report.ok || !report.modelReady) {
-    return {
-      tone: "problem",
-      message: `O modelo ${report.model} não está baixado no Ollama.`,
-    };
+    return `O modelo ${report.model} não está baixado no Ollama.`;
   }
 
-  return {
-    tone: "ok",
-    message: `Ollama está em execução e o modelo ${report.model} está disponível.`,
-  };
+  return null;
 }
 
 const backendOffline = "O backend não está em execução.";
@@ -165,7 +152,7 @@ export default function App() {
   const [screen, setScreen] = useState<"settings" | "news">("settings");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [healthNotice, setHealthNotice] = useState<HealthNotice | null>(null);
+  const [healthNotice, setHealthNotice] = useState<string | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const controllerRef = useRef<AbortController | null>(null);
@@ -195,24 +182,22 @@ export default function App() {
         const payload = await readJsonResponse(response);
 
         if (!isHealth(payload)) {
-          setHealthNotice({ tone: "problem", message: backendOffline });
+          setHealthNotice(backendOffline);
           return;
         }
 
-        setHealthNotice(healthNoticeFrom(payload));
+        setHealthNotice(healthProblemFrom(payload));
       } catch (caught) {
         if (controller.signal.aborted) return;
 
         if (caught instanceof TypeError) {
-          setHealthNotice({ tone: "problem", message: backendOffline });
+          setHealthNotice(backendOffline);
           return;
         }
 
-        setHealthNotice({
-          tone: "problem",
-          message:
-            caught instanceof Error ? caught.message : backendOffline,
-        });
+        setHealthNotice(
+          caught instanceof Error ? caught.message : backendOffline,
+        );
       }
     }
 
@@ -546,15 +531,8 @@ export default function App() {
       </header>
 
         {healthNotice && (
-          <p
-            className={
-              healthNotice.tone === "ok"
-                ? "notice health-status"
-                : "error-message health-status"
-            }
-            role={healthNotice.tone === "ok" ? "status" : "alert"}
-          >
-            {healthNotice.message}
+          <p className="error-message health-status" role="alert">
+            {healthNotice}
           </p>
         )}
 
