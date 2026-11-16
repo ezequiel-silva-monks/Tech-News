@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useId } from "react";
 import { Swiper, SwiperSlide } from "swiper/react";
 import { A11y, Keyboard, Navigation, Pagination } from "swiper/modules";
 import ExportNewsButton from "./components/ExportNewsButton";
+import { readServerSentEvents } from "./parseSse";
 
 import "swiper/css";
 import "swiper/css/navigation";
@@ -21,6 +22,23 @@ type News = {
   sourceName: string;
   imageUrl: string | null;
   hasSourceText: boolean;
+};
+
+type ItemError = {
+  id: string;
+  title: string;
+  sourceName: string;
+  sourceUrl: string;
+  message: string;
+};
+
+type Slide =
+  | { type: "item"; article: News }
+  | { type: "error"; failure: ItemError };
+
+type StreamProgress = {
+  completed: number;
+  total: number | null;
 };
 
 const categories: Record<Category, string> = {
@@ -61,6 +79,78 @@ function NewsImage({ src }: { src: string | null }) {
 }
 
 const quantityOptions = [1, 5, 10];
+
+function isNews(value: unknown): value is News {
+  if (!value || typeof value !== "object") return false;
+
+  const article = value as News;
+
+  return (
+    typeof article.id === "string" &&
+    typeof article.title === "string" &&
+    typeof article.sourceUrl === "string" &&
+    typeof article.sourceName === "string" &&
+    typeof article.date === "string" &&
+    typeof article.hasSourceText === "boolean" &&
+    (article.subtitle === null || typeof article.subtitle === "string") &&
+    (article.imageUrl === null || typeof article.imageUrl === "string") &&
+    Array.isArray(article.keywords) &&
+    Array.isArray(article.paragraphs) &&
+    article.paragraphs.length === 3
+  );
+}
+
+function isItemError(value: unknown): value is ItemError {
+  if (!value || typeof value !== "object") return false;
+
+  const item = value as ItemError;
+
+  return (
+    typeof item.id === "string" &&
+    typeof item.title === "string" &&
+    typeof item.sourceName === "string" &&
+    typeof item.sourceUrl === "string" &&
+    typeof item.message === "string"
+  );
+}
+
+function isMeta(
+  value: unknown,
+): value is { total: number; requested: number } {
+  if (!value || typeof value !== "object") return false;
+
+  const meta = value as { total: unknown; requested: unknown };
+
+  return typeof meta.total === "number" && typeof meta.requested === "number";
+}
+
+function isDone(
+  value: unknown,
+): value is { delivered: number; failed: number } {
+  if (!value || typeof value !== "object") return false;
+
+  const done = value as { delivered: unknown; failed: unknown };
+
+  return (
+    typeof done.delivered === "number" && typeof done.failed === "number"
+  );
+}
+
+function progressMessage(progress: StreamProgress): string {
+  if (progress.total === null) {
+    return "Consultando a GNews e preparando os resumos com llama3.1.";
+  }
+
+  if (progress.total === 0) {
+    return "Nenhuma publicação encontrada nesta consulta.";
+  }
+
+  if (progress.completed === 0) {
+    return `Gerando o resumo 1 de ${progress.total}.`;
+  }
+
+  return `Resumo ${progress.completed} de ${progress.total}.`;
+}
 
 type QuantitySelectProps = {
   value: number;
@@ -239,13 +329,22 @@ function QuantitySelect({
 export default function App() {
   const [category, setCategory] = useState<Category | null>(null);
   const [count, setCount] = useState(5);
-  const [news, setNews] = useState<News[]>([]);
+  const [slides, setSlides] = useState<Slide[]>([]);
+  const [progress, setProgress] = useState<StreamProgress>({
+    completed: 0,
+    total: null,
+  });
   const [screen, setScreen] = useState<"settings" | "news">("settings");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const controllerRef = useRef<AbortController | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
+
+  const successfulNews = slides.flatMap((slide) =>
+    slide.type === "item" ? [slide.article] : [],
+  );
+  const hasItemError = slides.some((slide) => slide.type === "error");
 
   useEffect(() => {
     return () => controllerRef.current?.abort();
@@ -255,89 +354,163 @@ export default function App() {
     headingRef.current?.focus();
   }, [screen]);
 
-  async function loadNews() {
-  if (!category || loading) return;
-
-  controllerRef.current?.abort();
-
-  const controller = new AbortController();
-  controllerRef.current = controller;
-
-  // Abre imediatamente a tela de notícias na mesma guia.
-  setScreen("news");
-  setNews([]);
-  setError("");
-  setLoading(true);
-
-  try {
-    const params = new URLSearchParams({
-      category,
-      count: String(count),
-    });
-
-    const response = await fetch(`/api/news?${params}`, {
-      signal: controller.signal,
-    });
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      throw new Error(result.error ?? "Falha ao carregar notícias.");
-    }
-
-    if (!Array.isArray(result.news) || result.news.length === 0) {
-      throw new Error("Nenhuma notícia disponível nesta consulta.");
-    }
-
-    setNews(result.news);
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") return;
-
-    setError(
-      error instanceof Error
-        ? error.message
-        : "Ocorreu um erro inesperado.",
-    );
-  } finally {
+  function leaveNews() {
+    controllerRef.current?.abort();
+    controllerRef.current = null;
+    setScreen("settings");
     setLoading(false);
+    setError("");
   }
-}
+
+  async function loadNews() {
+    if (!category || loading) return;
+
+    controllerRef.current?.abort();
+
+    const controller = new AbortController();
+    controllerRef.current = controller;
+
+    // Abre imediatamente a tela de notícias na mesma guia.
+    setScreen("news");
+    setSlides([]);
+    setProgress({ completed: 0, total: null });
+    setError("");
+    setLoading(true);
+
+    try {
+      const params = new URLSearchParams({
+        category,
+        count: String(count),
+      });
+
+      const response = await fetch(`/api/news?${params}`, {
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        let message = "Não foi possível contactar o backend.";
+
+        try {
+          const result = (await response.json()) as { error?: unknown };
+
+          if (typeof result.error === "string" && result.error) {
+            message = result.error;
+          }
+        } catch {
+          message = "Não foi possível contactar o backend.";
+        }
+
+        throw new Error(message);
+      }
+
+      const contentType = response.headers.get("content-type") ?? "";
+
+      if (!contentType.includes("text/event-stream") || !response.body) {
+        throw new Error("O backend não enviou o fluxo de notícias.");
+      }
+
+      let receivedDone = false;
+
+      for await (const event of readServerSentEvents(
+        response.body,
+        controller.signal,
+      )) {
+        if (controller.signal.aborted) return;
+
+        let payload: unknown;
+
+        try {
+          payload = JSON.parse(event.data);
+        } catch {
+          continue;
+        }
+
+        if (event.event === "meta" && isMeta(payload)) {
+          setProgress({ completed: 0, total: payload.total });
+          continue;
+        }
+
+        if (event.event === "item" && isNews(payload)) {
+          setSlides((current) => [
+            ...current,
+            { type: "item", article: payload },
+          ]);
+          setProgress((current) => ({
+            total: current.total,
+            completed: current.completed + 1,
+          }));
+          continue;
+        }
+
+        if (event.event === "item-error" && isItemError(payload)) {
+          setSlides((current) => [
+            ...current,
+            { type: "error", failure: payload },
+          ]);
+          setProgress((current) => ({
+            total: current.total,
+            completed: current.completed + 1,
+          }));
+          continue;
+        }
+
+        if (event.event === "done" && isDone(payload)) {
+          receivedDone = true;
+
+          if (payload.delivered === 0 && payload.failed === 0) {
+            setError("Nenhuma notícia disponível nesta consulta.");
+          }
+        }
+      }
+
+      if (!receivedDone && !controller.signal.aborted) {
+        setError("A conexão com o backend foi interrompida.");
+      }
+    } catch (caught) {
+      if (controller.signal.aborted) return;
+
+      if (caught instanceof TypeError) {
+        setError("Não foi possível contactar o backend.");
+        return;
+      }
+
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Ocorreu um erro inesperado.",
+      );
+    } finally {
+      if (controllerRef.current === controller) {
+        setLoading(false);
+      }
+    }
+  }
 
   if (screen === "news" && category) {
     return (
       <main className="app-shell">
         <div className="content-shell">
           <header className="page-header news-page-header">
-            {!loading && (
-              <>
-                <button
-                  type="button"
-                  className="back-arrow"
-                  onClick={() => setScreen("settings")}
-                  aria-label="Voltar às opções"
-                  title="Voltar às opções"
-                >
-                  <span aria-hidden="true">←</span>
-                </button>
+            <button
+              type="button"
+              className="back-arrow"
+              onClick={leaveNews}
+              aria-label="Voltar às opções"
+              title="Voltar às opções"
+            >
+              <span aria-hidden="true">←</span>
+            </button>
 
-                {!error && news.length > 0 && (
-                  <ExportNewsButton news={news} />
-                )}
-              </>
+            {!loading && successfulNews.length > 0 && (
+              <ExportNewsButton news={successfulNews} />
             )}
 
             <h1 ref={headingRef} tabIndex={-1} className="sr-only">
               Notícias de tecnologia
             </h1>
-
-            {!loading && !error && news.length > 0 && news.length < count && (
-              <p className="notice" role="status">
-                Foram encontradas menos publicações válidas que o solicitado.
-              </p>
-            )}
           </header>
 
-          {loading && (
+          {loading && slides.length === 0 && (
             <section
               className="feedback-panel loading-panel"
               aria-labelledby="loading-title"
@@ -348,14 +521,30 @@ export default function App() {
               <h2 id="loading-title">Preparando suas notícias</h2>
 
               <p role="status">
-                Consultando a GNews e processando os textos com llama3.1.
+                {progressMessage(progress)}
                 <br />
                 Isso pode levar alguns minutos.
               </p>
             </section>
           )}
 
-          {!loading && error && (
+          {loading && slides.length > 0 && (
+            <p className="notice stream-status" role="status">
+              {progressMessage(progress)}
+            </p>
+          )}
+
+          {!loading &&
+            !error &&
+            progress.total !== null &&
+            progress.total < count &&
+            slides.length > 0 && (
+              <p className="notice stream-status" role="status">
+                Foram encontradas menos publicações válidas que o solicitado.
+              </p>
+            )}
+
+          {!loading && error && slides.length === 0 && (
             <section className="feedback-panel" aria-labelledby="error-title">
               <h2 id="error-title">Não foi possível carregar as notícias</h2>
 
@@ -373,7 +562,25 @@ export default function App() {
             </section>
           )}
 
-          {!loading && !error && news.length > 0 && (
+          {!loading && error && slides.length > 0 && (
+            <p className="error-message stream-status" role="alert">
+              {error}
+            </p>
+          )}
+
+          {!loading && hasItemError && (
+            <div className="form-actions stream-status">
+              <button
+                type="button"
+                className="button button--primary"
+                onClick={() => void loadNews()}
+              >
+                Tentar novamente
+              </button>
+            </div>
+          )}
+
+          {slides.length > 0 && (
             <section className="news-section" aria-label="Carrossel de notícias">
               <Swiper
                 className="news-swiper"
@@ -385,6 +592,8 @@ export default function App() {
                 keyboard={{ enabled: true, onlyInViewport: true }}
                 autoHeight
                 watchOverflow
+                observer
+                observeParents
                 a11y={{
                   prevSlideMessage: "Notícia anterior",
                   nextSlideMessage: "Próxima notícia",
@@ -393,7 +602,51 @@ export default function App() {
                   paginationBulletMessage: "Ir para a notícia {{index}}",
                 }}
               >
-                {news.map((article) => (
+                {slides.map((slide) => {
+                  if (slide.type === "error") {
+                    return (
+                    <SwiperSlide key={slide.failure.id}>
+                      <article
+                        className="news-card"
+                        aria-labelledby={`title-${slide.failure.id}`}
+                      >
+                        <div className="news-card__content">
+                          <header className="news-card__header">
+                            <p className="news-date">{slide.failure.sourceName}</p>
+
+                            <h2 id={`title-${slide.failure.id}`}>
+                              {slide.failure.title}
+                            </h2>
+                          </header>
+
+                          <p className="error-message" role="alert">
+                            {slide.failure.message}
+                          </p>
+
+                          <footer className="news-footer">
+                            <div className="news-links">
+                              <a
+                                className="text-link"
+                                href={slide.failure.sourceUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                Ler publicação original
+                                <span aria-hidden="true"> ↗</span>
+                              </a>
+                            </div>
+                          </footer>
+                        </div>
+
+                        <NewsImage src={null} />
+                      </article>
+                    </SwiperSlide>
+                    );
+                  }
+
+                  const article = slide.article;
+
+                  return (
                   <SwiperSlide key={article.id}>
                     <article
                       className="news-card"
@@ -477,7 +730,8 @@ export default function App() {
                       />
                     </article>
                   </SwiperSlide>
-                ))}
+                  );
+                })}
               </Swiper>
             </section>
           )}

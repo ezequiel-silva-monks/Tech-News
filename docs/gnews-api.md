@@ -63,12 +63,15 @@ o IP do usuário. A política `no-referrer` evita enviar o referenciador.
 São utilizados:
 
 - Limite de 10 notícias por seleção.
-- Cache de consultas por cinco minutos.
-- Cache de resumos por trinta minutos.
+- Cache em memória das consultas à GNews e das listas completas, por cinco minutos.
+- Cache em disco dos resumos, por trinta minutos (`data/summaries.json`).
 - Uma geração em andamento por vez.
+- Entrega por Server-Sent Events, com falha isolada por notícia.
 - Timeouts e limite local de requisições.
 
-O cache é temporário e desaparece ao reiniciar o backend.
+A lista em memória desaparece ao reiniciar o backend. Os resumos em disco permanecem até expirar. A chave do resumo inclui o hash do prompt, então uma mudança nas instruções do modelo invalida os resumos anteriores.
+
+Voltar durante a geração fecha a conexão. O backend aborta a chamada em andamento ao Ollama antes de aceitar outra.
 
 A cota, o atraso das notícias e os recursos disponíveis dependem
 do plano contratado. O limite local não substitui a cota da GNews.

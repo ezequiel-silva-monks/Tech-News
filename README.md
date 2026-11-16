@@ -52,6 +52,8 @@ Backend local — Express
 
 A chave da GNews fica exclusivamente no backend. O navegador não consulta diretamente a API de notícias.
 
+`GET /api/news` responde com Server-Sent Events. Cada resumo é enviado assim que fica pronto (`event: item`). Uma falha isolada chega como `event: item-error` e não descarta os resumos anteriores. Fechar a página ou voltar às opções encerra a conexão e aborta a chamada em andamento ao Ollama.
+
 ## Pré-requisitos
 
 - Node.js 22 LTS ou outra versão suportada e compatível com o projeto.
@@ -165,7 +167,7 @@ O comando `preview` não inicia o backend. Para utilizar a aplicação nesse mod
 1. Selecione **Últimas de tecnologia** ou **Destaques de tecnologia**.
 2. Escolha a quantidade de notícias.
 3. Clique em **Explorar notícias**.
-4. Aguarde a consulta e o processamento local.
+4. Os cards aparecem conforme cada resumo fica pronto. Voltar às opções cancela a geração em andamento.
 5. Navegue pelo carrossel usando setas, indicadores, teclado ou gesto de deslizar.
 6. Utilize o link da publicação para conferir a fonte original.
 
@@ -239,13 +241,15 @@ A aplicação utiliza:
 | Recurso | Configuração |
 |---|---|
 | Notícias por seleção | Até 10 |
-| Cache das consultas e listas finais | 5 minutos |
-| Cache dos resumos | 30 minutos |
+| Cache das consultas à GNews e das listas completas | 5 minutos, em memória |
+| Cache dos resumos | 30 minutos, em disco (`data/summaries.json`) |
 | Processamento | Uma geração em andamento por vez |
 | Limite local de requisições | 30 por minuto |
 | Proteções adicionais | Timeouts e validação de respostas |
 
-O cache fica em memória e desaparece ao reiniciar o backend, inclusive nos reinícios automáticos durante o desenvolvimento.
+A lista em memória desaparece ao reiniciar o backend. Os resumos em disco permanecem até expirar. A chave de cada resumo inclui o modelo, o hash do prompt e o hash do texto recebido: mudar as instruções do modelo faz o resumo ser gerado de novo.
+
+A lista completa só é reaproveitada quando todos os resumos da seleção foram gerados. Voltar durante a geração fecha a conexão. O backend aborta a chamada em andamento ao Ollama e só então aceita a próxima.
 
 O limite local de requisições não substitui nem representa a cota da GNews.
 

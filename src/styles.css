@@ -290,6 +290,10 @@ p {
   line-height: 1.6;
 }
 
+.stream-status {
+  margin-bottom: 24px;
+}
+
 .error-message {
   padding-left: 16px;
   border-left: 2px solid var(--tag-border);
