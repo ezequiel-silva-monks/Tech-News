@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   HealthReport,
   ItemError,
@@ -143,6 +143,17 @@ function progressMessage(progress: StreamProgress): string {
   return `Resumo ${progress.completed} de ${progress.total}.`;
 }
 
+function formatElapsed(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+type HistoryView = {
+  view?: "news" | "options";
+};
+
 export default function App() {
   const [category, setCategory] = useState<NewsCategory | null>(null);
   const [count, setCount] = useState(5);
@@ -155,9 +166,14 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [healthNotice, setHealthNotice] = useState<HealthNotice | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const controllerRef = useRef<AbortController | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const hasNewsHistoryRef = useRef(false);
+  const screenRef = useRef(screen);
+  const startedAtRef = useRef(0);
+  const returnToOptionsRef = useRef<() => void>(() => {});
 
   const successfulNews = slides.flatMap((slide) =>
     slide.type === "item" ? [slide.article] : [],
@@ -206,15 +222,62 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    screenRef.current = screen;
     headingRef.current?.focus();
   }, [screen]);
 
-  function leaveNews() {
+  useEffect(() => {
+    if (!loading) return;
+
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(
+        Math.floor((Date.now() - startedAtRef.current) / 1000),
+      );
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [loading]);
+
+  const returnToOptions = useCallback(() => {
     controllerRef.current?.abort();
     controllerRef.current = null;
+    hasNewsHistoryRef.current = false;
     setScreen("settings");
     setLoading(false);
     setError("");
+    setElapsedSeconds(0);
+  }, []);
+
+  useEffect(() => {
+    returnToOptionsRef.current = returnToOptions;
+  }, [returnToOptions]);
+
+  useEffect(() => {
+    function onPopState(event: PopStateEvent) {
+      const view = (event.state as HistoryView | null)?.view;
+
+      if (view === "news" && screenRef.current === "settings") {
+        history.replaceState({ view: "options" }, "");
+        return;
+      }
+
+      if (screenRef.current === "news") {
+        returnToOptionsRef.current();
+      }
+    }
+
+    window.addEventListener("popstate", onPopState);
+
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  function handleBack() {
+    if (hasNewsHistoryRef.current) {
+      history.back();
+      return;
+    }
+
+    returnToOptions();
   }
 
   async function loadNews() {
@@ -227,6 +290,14 @@ export default function App() {
 
     // Abre imediatamente a tela de notícias na mesma guia.
     setScreen("news");
+
+    if (!hasNewsHistoryRef.current) {
+      history.pushState({ view: "news" }, "");
+      hasNewsHistoryRef.current = true;
+    }
+
+    startedAtRef.current = Date.now();
+    setElapsedSeconds(0);
     setSlides([]);
     setProgress({ completed: 0, total: null });
     setError("");
@@ -352,7 +423,7 @@ export default function App() {
             <button
               type="button"
               className="back-arrow"
-              onClick={leaveNews}
+              onClick={handleBack}
               aria-label="Voltar às opções"
               title="Voltar às opções"
             >
@@ -369,6 +440,7 @@ export default function App() {
           </header>
 
           {loading && slides.length === 0 && (
+            <>
             <section
               className="feedback-panel loading-panel"
               aria-labelledby="loading-title"
@@ -383,12 +455,31 @@ export default function App() {
                 <br />
                 Isso pode levar alguns minutos.
               </p>
+
+              <p className="loading-elapsed">
+                Gerando há {formatElapsed(elapsedSeconds)}.
+              </p>
             </section>
+
+            <div className="loading-skeleton" aria-hidden="true">
+              <div className="loading-skeleton__copy">
+                <span className="loading-skeleton__line loading-skeleton__line--short" />
+                <span className="loading-skeleton__line loading-skeleton__line--title" />
+                <span className="loading-skeleton__line" />
+                <span className="loading-skeleton__line" />
+                <span className="loading-skeleton__line loading-skeleton__line--medium" />
+              </div>
+              <span className="loading-skeleton__media" />
+            </div>
+            </>
           )}
 
           {loading && slides.length > 0 && (
             <p className="notice stream-status" role="status">
-              {progressMessage(progress)}
+              {progressMessage(progress)}{" "}
+              <span className="loading-elapsed">
+                Gerando há {formatElapsed(elapsedSeconds)}.
+              </span>
             </p>
           )}
 
