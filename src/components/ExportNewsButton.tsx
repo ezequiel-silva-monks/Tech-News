@@ -9,19 +9,9 @@ import {
   View,
   pdf,
 } from "@react-pdf/renderer";
+import type { News } from "../../shared/types.ts";
 
-export type ExportableNews = {
-  id: string;
-  title: string;
-  subtitle: string | null;
-  date: string;
-  keywords: string[];
-  paragraphs: [string | null, string | null, string | null];
-  sourceUrl: string;
-  sourceName: string;
-  imageUrl: string | null;
-  hasSourceText: boolean;
-};
+export type ExportableNews = News;
 
 type PreparedNews = ExportableNews & {
   pdfImage: string | null;

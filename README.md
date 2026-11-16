@@ -158,6 +158,9 @@ npm run build
 
 # Visualiza o build do frontend
 npm run preview
+
+# Executa os testes unitários (Vitest, sem acesso à rede)
+npm test
 ```
 
 O comando `preview` não inicia o backend. Para utilizar a aplicação nesse modo, também é necessário configurar o acesso às rotas do backend; o proxy de desenvolvimento do Vite não faz parte do build.
@@ -360,16 +363,39 @@ A URL pode estar indisponível ou o servidor de origem pode bloquear o carregame
 ├── docs/
 │   └── gnews-api.md
 ├── server/
-│   └── index.ts
+│   ├── index.ts            # Express, rotas e trava de geração
+│   ├── config.ts           # Variáveis de ambiente
+│   ├── schemas.ts          # Schemas Zod
+│   ├── summary-cache.ts    # Cache de resumos em disco
+│   ├── lib/
+│   │   ├── errors.ts
+│   │   ├── http.ts
+│   │   ├── memory-cache.ts
+│   │   ├── security.ts
+│   │   └── sse.ts
+│   └── services/
+│       ├── gnews.ts
+│       ├── image-proxy.ts
+│       └── ollama.ts
+├── shared/
+│   └── types.ts            # Tipos usados pelo backend e pelo frontend
 ├── src/
 │   ├── App.tsx
 │   ├── main.tsx
-│   └── styles.css
+│   ├── parseSse.ts
+│   ├── styles.css
+│   └── components/
+│       ├── ExportNewsButton.tsx
+│       ├── NewsCarousel.tsx
+│       └── QueryForm.tsx
 ├── .env.example
 ├── .gitignore
 ├── package.json
-└── vite.config.ts
+├── vite.config.ts
+└── vitest.config.ts
 ```
+
+Os testes ficam ao lado do código, em `server/**/*.test.ts`.
 
 ## Termos e direitos de uso
 

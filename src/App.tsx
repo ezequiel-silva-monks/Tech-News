@@ -1,84 +1,23 @@
-import { useEffect, useRef, useState, useId } from "react";
-import { Swiper, SwiperSlide } from "swiper/react";
-import { A11y, Keyboard, Navigation, Pagination } from "swiper/modules";
+import { useEffect, useRef, useState } from "react";
+import type {
+  HealthReport,
+  ItemError,
+  News,
+  NewsCategory,
+  NewsStreamDone,
+  NewsStreamMeta,
+} from "../shared/types.ts";
 import ExportNewsButton from "./components/ExportNewsButton";
+import NewsCarousel, { type Slide } from "./components/NewsCarousel";
+import QueryForm from "./components/QueryForm";
 import { readServerSentEvents } from "./parseSse";
 
-import "swiper/css";
-import "swiper/css/navigation";
-import "swiper/css/pagination";
 import "./styles.css";
-
-type Category = "latest" | "headlines";
-
-type News = {
-  id: string;
-  title: string;
-  subtitle: string | null;
-  date: string;
-  keywords: string[];
-  paragraphs: [string | null, string | null, string | null];
-  sourceUrl: string;
-  sourceName: string;
-  imageUrl: string | null;
-  hasSourceText: boolean;
-};
-
-type ItemError = {
-  id: string;
-  title: string;
-  sourceName: string;
-  sourceUrl: string;
-  message: string;
-};
-
-type Slide =
-  | { type: "item"; article: News }
-  | { type: "error"; failure: ItemError };
 
 type StreamProgress = {
   completed: number;
   total: number | null;
 };
-
-const categories: Record<Category, string> = {
-  latest: "Últimas de tecnologia",
-  headlines: "Destaques de tecnologia",
-};
-
-const categoryDescriptions: Record<Category, string> = {
-  latest:
-    "Notícias sobre tecnologia, ordenadas da mais recente para a mais antiga.",
-  headlines:
-    "Manchetes da categoria de tecnologia selecionadas pela GNews.",
-};
-
-const dateFormatter = new Intl.DateTimeFormat("pt-BR", {
-  dateStyle: "long",
-  timeStyle: "short",
-});
-
-function NewsImage({ src }: { src: string | null }) {
-  const [failed, setFailed] = useState(false);
-
-  return (
-    <div className="news-card__media" aria-hidden="true">
-      {src && !failed && (
-        <img
-          className="news-card__image"
-          src={src}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          referrerPolicy="no-referrer"
-          onError={() => setFailed(true)}
-        />
-      )}
-    </div>
-  );
-}
-
-const quantityOptions = [1, 5, 10];
 
 function isNews(value: unknown): value is News {
   if (!value || typeof value !== "object") return false;
@@ -114,9 +53,7 @@ function isItemError(value: unknown): value is ItemError {
   );
 }
 
-function isMeta(
-  value: unknown,
-): value is { total: number; requested: number } {
+function isMeta(value: unknown): value is NewsStreamMeta {
   if (!value || typeof value !== "object") return false;
 
   const meta = value as { total: unknown; requested: unknown };
@@ -124,9 +61,7 @@ function isMeta(
   return typeof meta.total === "number" && typeof meta.requested === "number";
 }
 
-function isDone(
-  value: unknown,
-): value is { delivered: number; failed: number } {
+function isDone(value: unknown): value is NewsStreamDone {
   if (!value || typeof value !== "object") return false;
 
   const done = value as { delivered: unknown; failed: unknown };
@@ -135,13 +70,6 @@ function isDone(
     typeof done.delivered === "number" && typeof done.failed === "number"
   );
 }
-
-type HealthReport = {
-  ok: boolean;
-  ollama: "up" | "down";
-  model: string;
-  modelReady: boolean;
-};
 
 type HealthNotice = {
   tone: "ok" | "problem";
@@ -215,182 +143,8 @@ function progressMessage(progress: StreamProgress): string {
   return `Resumo ${progress.completed} de ${progress.total}.`;
 }
 
-type QuantitySelectProps = {
-  value: number;
-  onChange: (value: number) => void;
-  disabled?: boolean;
-};
-
-function QuantitySelect({
-  value,
-  onChange,
-  disabled = false,
-}: QuantitySelectProps) {
-  const id = useId();
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-
-  const selectedIndex = Math.max(0, quantityOptions.indexOf(value));
-
-  useEffect(() => {
-    if (!open) return;
-
-    function handlePointerDown(event: PointerEvent) {
-      if (
-        event.target instanceof Node &&
-        !rootRef.current?.contains(event.target)
-      ) {
-        setOpen(false);
-      }
-    }
-
-    document.addEventListener("pointerdown", handlePointerDown);
-
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (open) {
-      optionRefs.current[selectedIndex]?.focus();
-    }
-  }, [open, selectedIndex]);
-
-  function closeAndFocus() {
-    setOpen(false);
-    triggerRef.current?.focus();
-  }
-
-  function selectOption(option: number) {
-    onChange(option);
-    closeAndFocus();
-  }
-
-  return (
-    <div
-      className="custom-select"
-      ref={rootRef}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) {
-          setOpen(false);
-        }
-      }}
-    >
-      <span id={`${id}-label`} className="custom-select__label">
-        Quantidade de notícias
-      </span>
-
-      <button
-        ref={triggerRef}
-        id={`${id}-trigger`}
-        type="button"
-        className="custom-select__trigger"
-        disabled={disabled}
-        aria-labelledby={`${id}-label ${id}-value`}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls={open ? `${id}-listbox` : undefined}
-        onClick={() => setOpen((previous) => !previous)}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-            event.preventDefault();
-            setOpen(true);
-          }
-
-          if (event.key === "Escape") {
-            setOpen(false);
-          }
-        }}
-      >
-        <span id={`${id}-value`}>
-          {value} {value === 1 ? "notícia" : "notícias"}
-        </span>
-
-        <span
-          className={`custom-select__chevron ${open ? "is-open" : ""}`}
-          aria-hidden="true"
-        >
-          ▾
-        </span>
-      </button>
-
-      {open && (
-        <div
-          id={`${id}-listbox`}
-          className="custom-select__dropdown"
-          role="listbox"
-          aria-labelledby={`${id}-label`}
-        >
-          {quantityOptions.map((option, index) => (
-            <button
-              key={option}
-              ref={(element) => {
-                optionRefs.current[index] = element;
-              }}
-              type="button"
-              role="option"
-              aria-selected={value === option}
-              tabIndex={-1}
-              className="custom-select__option"
-              onClick={() => selectOption(option)}
-              onKeyDown={(event) => {
-                let targetIndex: number | undefined;
-
-                switch (event.key) {
-                  case "ArrowDown":
-                    targetIndex = (index + 1) % quantityOptions.length;
-                    break;
-
-                  case "ArrowUp":
-                    targetIndex =
-                      (index - 1 + quantityOptions.length) %
-                      quantityOptions.length;
-                    break;
-
-                  case "Home":
-                    targetIndex = 0;
-                    break;
-
-                  case "End":
-                    targetIndex = quantityOptions.length - 1;
-                    break;
-
-                  case "Escape":
-                    event.preventDefault();
-                    closeAndFocus();
-                    return;
-
-                  case "Tab":
-                    // Retorna ao botão antes da navegação padrão por Tab.
-                    setOpen(false);
-                    triggerRef.current?.focus();
-                    return;
-                }
-
-                if (targetIndex !== undefined) {
-                  event.preventDefault();
-                  optionRefs.current[targetIndex]?.focus();
-                }
-              }}
-            >
-              <span>
-                {option} {option === 1 ? "notícia" : "notícias"}
-              </span>
-
-              {value === option && <span aria-hidden="true">✓</span>}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function App() {
-  const [category, setCategory] = useState<Category | null>(null);
+  const [category, setCategory] = useState<NewsCategory | null>(null);
   const [count, setCount] = useState(5);
   const [slides, setSlides] = useState<Slide[]>([]);
   const [progress, setProgress] = useState<StreamProgress>({
@@ -684,161 +438,7 @@ export default function App() {
             </div>
           )}
 
-          {slides.length > 0 && (
-            <section className="news-section" aria-label="Carrossel de notícias">
-              <Swiper
-                className="news-swiper"
-                modules={[Navigation, Pagination, Keyboard, A11y]}
-                slidesPerView={1}
-                spaceBetween={32}
-                navigation
-                pagination={{ clickable: true }}
-                keyboard={{ enabled: true, onlyInViewport: true }}
-                autoHeight
-                watchOverflow
-                observer
-                observeParents
-                a11y={{
-                  prevSlideMessage: "Notícia anterior",
-                  nextSlideMessage: "Próxima notícia",
-                  firstSlideMessage: "Esta é a primeira notícia",
-                  lastSlideMessage: "Esta é a última notícia",
-                  paginationBulletMessage: "Ir para a notícia {{index}}",
-                }}
-              >
-                {slides.map((slide) => {
-                  if (slide.type === "error") {
-                    return (
-                    <SwiperSlide key={slide.failure.id}>
-                      <article
-                        className="news-card"
-                        aria-labelledby={`title-${slide.failure.id}`}
-                      >
-                        <div className="news-card__content">
-                          <header className="news-card__header">
-                            <p className="news-date">{slide.failure.sourceName}</p>
-
-                            <h2 id={`title-${slide.failure.id}`}>
-                              {slide.failure.title}
-                            </h2>
-                          </header>
-
-                          <p className="error-message" role="alert">
-                            {slide.failure.message}
-                          </p>
-
-                          <footer className="news-footer">
-                            <div className="news-links">
-                              <a
-                                className="text-link"
-                                href={slide.failure.sourceUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                              >
-                                Ler publicação original
-                                <span aria-hidden="true"> ↗</span>
-                              </a>
-                            </div>
-                          </footer>
-                        </div>
-
-                        <NewsImage src={null} />
-                      </article>
-                    </SwiperSlide>
-                    );
-                  }
-
-                  const article = slide.article;
-
-                  return (
-                  <SwiperSlide key={article.id}>
-                    <article
-                      className="news-card"
-                      aria-labelledby={`title-${article.id}`}
-                    >
-                      <div className="news-card__content">
-                        <header className="news-card__header">
-                          <p className="news-date">
-                            {article.sourceName} · Publicada em{" "}
-                            <time dateTime={article.date}>
-                              {dateFormatter.format(new Date(article.date))}
-                            </time>
-                          </p>
-
-                          <h2 id={`title-${article.id}`}>{article.title}</h2>
-
-                          {article.subtitle && (
-                            <p className="news-subtitle">{article.subtitle}</p>
-                          )}
-                        </header>
-
-                        {article.keywords.length > 0 && (
-                          <ul className="tags" aria-label="Palavras-chave">
-                            {article.keywords.map((keyword, index) => (
-                              <li className="tag" key={`${keyword}-${index}`}>
-                                {keyword}
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-
-                        <div className="news-body">
-                          {article.paragraphs[0] && (
-                            <p>{article.paragraphs[0]}</p>
-                          )}
-
-                          {article.paragraphs[1] && (
-                            <p>{article.paragraphs[1]}</p>
-                          )}
-
-                          {article.paragraphs[2] && (
-                            <div className="main-point">
-                              <p>{article.paragraphs[2]}</p>
-                            </div>
-                          )}
-                        </div>
-
-                        {!article.hasSourceText && (
-                          <p className="notice">
-                            A GNews disponibilizou apenas o título e os dados da publicação.
-                            Não foi gerado um resumo da matéria completa.
-                          </p>
-                        )}
-
-                        {article.hasSourceText &&
-                          article.paragraphs.some((paragraph) => !paragraph) && (
-                            <p className="notice">
-                              O conteúdo disponível não permitiu preencher todas
-                              as partes do resumo com segurança.
-                            </p>
-                          )}
-
-                        <footer className="news-footer">
-                          <div className="news-links">
-                            <a
-                              className="text-link"
-                              href={article.sourceUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                            >
-                              Ler publicação original
-                              <span aria-hidden="true"> ↗</span>
-                            </a>
-                          </div>
-                        </footer>
-                      </div>
-
-                      <NewsImage
-                        key={article.imageUrl ?? "no-image"}
-                        src={article.imageUrl}
-                      />
-                    </article>
-                  </SwiperSlide>
-                  );
-                })}
-              </Swiper>
-            </section>
-          )}
+          {slides.length > 0 && <NewsCarousel slides={slides} />}
         </div>
       </main>
     );
@@ -867,70 +467,14 @@ export default function App() {
           </p>
         )}
 
-        <form
-          className="settings-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void loadNews();
-          }}
-          aria-busy={loading}
-        >
-          <fieldset className="form-fieldset" disabled={loading}>
-            <div className="category-grid">
-              {(Object.entries(categories) as [Category, string][]).map(
-                ([value, label]) => (
-                  <label className="category-option" key={value}>
-                    <input
-                      type="radio"
-                      name="category"
-                      value={value}
-                      checked={category === value}
-                      onChange={() => setCategory(value)}
-                      required
-                    />
-
-                    <span className="category-card">
-                      <span className="category-card__top">
-                        <span className="category-card__title">{label}</span>
-                        <span
-                          className="category-card__indicator"
-                          aria-hidden="true"
-                        />
-                      </span>
-
-                      <span className="category-card__description">
-                        {categoryDescriptions[value]}
-                      </span>
-                    </span>
-                  </label>
-                ),
-              )}
-            </div>
-          </fieldset>
-
-          {category && (
-            <fieldset className="form-fieldset" disabled={loading}>
-              <legend className="sr-only">Quantidade de notícias</legend>
-
-              <QuantitySelect
-                value={count}
-                onChange={setCount}
-                disabled={loading}
-              />
-            </fieldset>
-          )}
-
-          <div className="form-actions">
-            <button
-              className="button button--primary"
-              type="submit"
-              disabled={!category || loading}
-            >
-              Explorar notícias
-              <span aria-hidden="true">→</span>
-            </button>
-          </div>
-        </form>
+        <QueryForm
+          category={category}
+          count={count}
+          loading={loading}
+          onCategoryChange={setCategory}
+          onCountChange={setCount}
+          onSubmit={() => void loadNews()}
+        />
       </div>
     </main>
   );
